@@ -1,10 +1,10 @@
 declare module "models" {
-    export type GloryRequestInfo = {
+    export type SitecoslRequestInfo = {
         requestName: string;
         responseName: string;
     };
 
-    export type GlorySettings = {
+    export type SitecoslSettings = {
         OccupyEnable: "0" | "1";
         SessionEnable: "0" | "1";
         SessionMinute: string;
@@ -12,7 +12,7 @@ declare module "models" {
         SoapUserCheck: "0" | "1";
     };
 
-    export type GloryUser = {
+    export type SitecoslUser = {
         id: string;
         session_id?: string;
         // The following are the user's permissions, we don't check these yet but may in the future
@@ -34,11 +34,11 @@ declare module "models" {
         sealing: 0 | 1;
     };
 
-    export type GloryXmlElement =
+    export type SitecoslXmlElement =
         | string
         | {
               name: string;
-              children?: GloryXmlElement[];
+              children?: SitecoslXmlElement[];
               attributes?: Record<string, string>;
           };
 

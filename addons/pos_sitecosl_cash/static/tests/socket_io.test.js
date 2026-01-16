@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "@odoo/hoot";
 import { waitUntil } from "@odoo/hoot-dom";
 import { advanceTime, mockWebSocket } from "@odoo/hoot-mock";
-import { SocketIoService } from "@pos_glory_cash/utils/socket_io";
+import { SocketIoService } from "@pos_sitecosl_cash/utils/socket_io";
 
 const websocketState = {
     instance: null,

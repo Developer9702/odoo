@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <templates xml:space="preserve">
 
-    <t t-name="pos_glory_cash.CancelDialog">
+    <t t-name="pos_sitecosl_cash.CancelDialog">
         <Dialog size="'sm'" title.translate="Cash machine error">
             <p t-out="props.message" class="text-prewrap"/>
             <t t-set-slot="footer">

@@ -10,11 +10,11 @@
     ],
     'assets': {
         'point_of_sale._assets_pos': [
-            'pos_sitecosl_cash/static/src/**/*',
+            'pos_sitecosl_cash/static/src/sitecosl.js',
+              "pos_sitecosl_cash/static/src/utils/sitecosl_soap.js",
         ],
         'web.assets_unit_tests': [
             'pos_sitecosl_cash/static/tests/**/*',
-            'pos_sitecosl_cash/static/src/utils/*.js',
         ],
     },
     'author': 'Odoo S.A.',

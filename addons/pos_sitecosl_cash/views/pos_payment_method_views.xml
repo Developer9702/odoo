@@ -10,9 +10,7 @@
                     <page name="settings" string="Siteco Settings">
                         <group>
                             <group>
-                                <field name="sitecosl_websocket_address" required="payment_method_type == 'sitecosl_cash'"/>
-                                <field name="sitecosl_username"/>
-                                <field name="sitecosl_password" password="True"/>
+                                <field name="sitecosl_host_address" required="payment_method_type == 'sitecosl_cash'"/>
                             </group>
                         </group>
                     </page>

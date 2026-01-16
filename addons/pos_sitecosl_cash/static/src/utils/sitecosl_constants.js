@@ -1,7 +1,9 @@
+//constantes nombres/estados centralizados
+
 import { _t } from "@web/core/l10n/translation";
 
 /**
- * @type {import("models").GloryRequestInfo[]}
+ * @type {import("models").SitecoslRequestInfo[]}
  */
 export const WEBSOCKET_REQUESTS = {
     login: {
@@ -23,7 +25,7 @@ export const WEBSOCKET_REQUESTS = {
 };
 
 /**
- * @type {import("models").GloryRequestInfo[]}
+ * @type {import("models").SitecoslRequestInfo[]}
  */
 export const XML_REQUESTS = {
     getStatus: {
@@ -65,7 +67,7 @@ export const XML_REQUESTS = {
 };
 
 // See p198 of the IF Specification document, "StatusChangeNotification"
-export const GLORY_STATUS = {
+export const SITECOSL_STATUS = {
     0: "INITIALIZING",
     1: "IDLE",
     2: "STARTING_PAYMENT",
@@ -99,7 +101,7 @@ export const GLORY_STATUS = {
     41: "WAITING_UPDATE",
 };
 
-export const GLORY_STATUS_STRING = {
+export const SITECOSL_STATUS_STRING = {
     DISCONNECTED: _t("Disconnected"),
     BAD_CREDENTIALS: _t("Failed to authenticate"),
     INITIALIZING: _t("Initializing"),
@@ -126,7 +128,7 @@ export const GLORY_STATUS_STRING = {
 };
 
 // See p51 of the IF Specification document, "ChangeResponse"
-export const GLORY_RESULT = {
+export const SITECOSL_RESULT = {
     0: "SUCCESS",
     1: "CANCEL",
     2: "RESET",
@@ -152,7 +154,7 @@ export const GLORY_RESULT = {
 };
 
 // See p77 of the IF Specification document, "InventoryResponse"
-export const GLORY_CURRENCY_STATUS = {
+export const SITECOSL_CURRENCY_STATUS = {
     0: "EMPTY",
     1: "NEAR_EMPTY",
     2: "EXIST",

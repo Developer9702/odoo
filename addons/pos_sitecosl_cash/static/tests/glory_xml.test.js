@@ -1,13 +1,13 @@
 import { describe, expect, test } from "@odoo/hoot";
-import { makeGloryHeader, parseGloryXml, serializeGloryXml } from "@pos_glory_cash/utils/glory_xml";
+import { makeSitecoslHeader, parseSitecoslXml, serializeSitecoslXml } from "@pos_sitecosl_cash/utils/sitecosl_xml";
 
 const TEST_XML = '<MockElement mockattribute="mock value">Mock Content</MockElement>';
 const TEST_XML_WITH_CHILD = "<MockElement><ChildElement>Child Content</ChildElement></MockElement>";
 const TEST_XML_WITH_CONTROL_CHARS = `\x04${TEST_XML}\0`;
 
-describe("parse glory xml", () => {
+describe("parse sitecosl xml", () => {
     test("parses simple XML correctly", async () => {
-        const result = await parseGloryXml(new Blob([TEST_XML]));
+        const result = await parseSitecoslXml(new Blob([TEST_XML]));
 
         expect(result).toBeInstanceOf(Element);
         expect(result.tagName).toBe("MockElement");
@@ -16,7 +16,7 @@ describe("parse glory xml", () => {
     });
 
     test("parses simple XML with control characters correctly", async () => {
-        const result = await parseGloryXml(new Blob([TEST_XML_WITH_CONTROL_CHARS]));
+        const result = await parseSitecoslXml(new Blob([TEST_XML_WITH_CONTROL_CHARS]));
 
         expect(result).toBeInstanceOf(Element);
         expect(result.tagName).toBe("MockElement");
@@ -25,9 +25,9 @@ describe("parse glory xml", () => {
     });
 });
 
-describe("serialize glory xml", () => {
+describe("serialize sitecosl xml", () => {
     test("serializes a simple element correctly", () => {
-        const result = serializeGloryXml({
+        const result = serializeSitecoslXml({
             name: "MockElement",
             attributes: { mockattribute: "mock value" },
             children: ["Mock Content"],
@@ -37,7 +37,7 @@ describe("serialize glory xml", () => {
     });
 
     test("serializes an element with children correctly", () => {
-        const result = serializeGloryXml({
+        const result = serializeSitecoslXml({
             name: "MockElement",
             children: [
                 {
@@ -51,30 +51,30 @@ describe("serialize glory xml", () => {
     });
 });
 
-describe("make glory header", () => {
+describe("make sitecosl header", () => {
     test("sets the ID to 'OdooPos'", () => {
-        const result = makeGloryHeader(1);
+        const result = makeSitecoslHeader(1);
 
         expect(result[0].name).toBe("Id");
         expect(result[0].children[0]).toBe("OdooPos");
     });
 
     test("sets the sequence number to the provided number", () => {
-        const result = makeGloryHeader(1);
+        const result = makeSitecoslHeader(1);
 
         expect(result[1].name).toBe("SeqNo");
         expect(parseInt(result[1].children[0])).toBe(1);
     });
 
     test("pads the sequence number to 11 characters", () => {
-        const result = makeGloryHeader(1);
+        const result = makeSitecoslHeader(1);
 
         expect(result[1].name).toBe("SeqNo");
         expect(result[1].children[0]).toBe("00000000001");
     });
 
     test("sets the session ID to the provided value", () => {
-        const result = makeGloryHeader(1, "mockSessionId");
+        const result = makeSitecoslHeader(1, "mockSessionId");
 
         expect(result[2].name).toBe("SessionID");
         expect(result[2].children[0]).toBe("mockSessionId");
