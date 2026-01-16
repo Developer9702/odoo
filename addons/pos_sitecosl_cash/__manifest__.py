@@ -1,8 +1,8 @@
 {
-    'name': 'POS Glory Cash Machines',
+    'name': 'POS Siteco SL Cash Machine',
     'version': '1.0',
     'category': 'Sales/Point of Sale',
-    'summary': 'Integrate your POS with a Glory automatic cash payment device',
+    'summary': 'Integrate your POS with a Siteco SL automatic cash payment device',
     'depends': ['point_of_sale'],
     'installable': True,
     'data': [
@@ -10,11 +10,11 @@
     ],
     'assets': {
         'point_of_sale._assets_pos': [
-            'pos_glory_cash/static/src/**/*',
+            'pos_sitecosl_cash/static/src/**/*',
         ],
         'web.assets_unit_tests': [
-            'pos_glory_cash/static/tests/**/*',
-            'pos_glory_cash/static/src/utils/*.js',
+            'pos_sitecosl_cash/static/tests/**/*',
+            'pos_sitecosl_cash/static/src/utils/*.js',
         ],
     },
     'author': 'Odoo S.A.',
