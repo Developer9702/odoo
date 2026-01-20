@@ -54,9 +54,7 @@ export async function callSitecoslSoap({ hostAddress, action, bodyInnerXml, time
 }
 
 export async function appInfo(hostAddress) {
-    const result = await rpc("/pos_sitecosl_cash/appinfo", {
-        host_address: hostAddress,
-    });
+    const result = await rpc("/pos_sitecosl_cash/appinfo", { host_address: hostAddress });
     console.log("[SITECOSL] AppInfo via Odoo:", result);
-    return !!result.ok;
+    return result; // ✅ devolver el objeto, NO boolean
 }

@@ -20,39 +20,71 @@ export class SitecoServicioCobroService extends PaymentInterface {
         this.dialog = this.env.services.dialog;
         this.logger = new Logger("pos_sitecosl_cash");
 
-        this.state = reactive({
-            status: "DISCONNECTED", // CONNECTED | DISCONNECTED
+        //Timers conexion y health check
+        this._timer = null;
+        this._failCount = 0;
+        this._hasEverConnected = false;
+        this._lastPopupAt = 0;
+
+        //Flags para pop up de conexion
+        this._shownConnectedOnce = false;
+        this._shownDisconnectedOnce = false;
+        this._lastStatus = null; // "CONNECTED" | "DISCONNECTED"
+
+        // tiempos (ajústalos a gusto)
+        this.RETRY_MS_DISCONNECTED = 5000;   // cuando falla
+        this.HEALTHCHECK_MS_CONNECTED = 30000; // cuando va bien
+        this.FAILS_BEFORE_POPUP = 3;        // umbral
+        this.POPUP_COOLDOWN_MS = 60000;     // 1 min
+
+        console.log(
+        "[SITECOSL] setup() called id=",this.payment_method_id?.id,
+        "host=",this.payment_method_id?.sitecosl_host_address );
+
+       this.state = reactive({
+            status: "DISCONNECTED",
         });
 
-        console.log("[SITECOSL] setup() called", this.payment_method_id);
+        this._startHealthLoop();
 
-        // Comprueba conexión al iniciar el servicio
-        this.checkConnection();
+        console.log("[SITECOSL] setup() called", this.payment_method_id);
     }
 
     get hostAddress() {
         return this.payment_method_id.sitecosl_host_address || "127.0.0.1:8080";
     }
 
-    async checkConnection() {
+    //Verifica la conexión con el servicio web
+    async checkConnection({ silent = false } = {}) {
         try {
-        const ok = await appInfo(this.hostAddress);
+            const result = await appInfo(this.hostAddress);
 
-        console.log(
-            "[SITECOSL] AppInfo:",
-            ok ? "CONNECTED" : "DISCONNECTED",
-            "host:",
-            this.hostAddress
-        );
+            // ✅ soporta objeto o boolean por seguridad
+            const ok = typeof result === "boolean" ? result : !!result.ok;
+            const error = typeof result === "object" && result ? (result.error || null) : null;
 
-        this.state.status = ok ? "CONNECTED" : "DISCONNECTED";
-        if (!ok) {
-            this.showError(_t("Siteco service is not responding (AppInfo)."));
-        }
+            console.log(
+                "[SITECOSL] AppInfo raw result id=",
+                this.payment_method_id?.id,
+                "host=",
+                this.hostAddress,
+                "result=",
+                result,
+                "computed ok=",
+                ok
+            );
+
+            if (!ok && !silent) {
+                this.showError(this._makeConnectionErrorMessage(error));
+            }
+            return { ok, error };
         } catch (e) {
-            this.state.status = "DISCONNECTED";
             console.error("[SITECOSL] AppInfo ERROR:", e);
-            this.showError(_t("Failed to connect to Siteco service (AppInfo)."));
+            const error = e?.message || String(e);
+            if (!silent) {
+                this.showError(this._makeConnectionErrorMessage(error));
+            }
+            return { ok: false, error };
         }
     }
 
@@ -83,4 +115,101 @@ export class SitecoServicioCobroService extends PaymentInterface {
             body: msg,
         });
     }
+
+    _makeConnectionErrorMessage(details) {
+        // Mensaje “bonito” como Glory, sin detalles técnicos
+        const base = _t(
+            "Failed to connect to Siteco cash service. Please ensure it is running and reachable from the POS."
+        );
+
+        // Si quieres mostrar detalles SOLO a veces, puedes concatenarlo.
+        // Yo por defecto lo dejaría fuera para no confundir a usuario.
+        if (!details) return base;
+
+        // Si quieres incluir detalles:
+        // return `${base}\n\n${_t("Details")}: ${details}`;
+
+        return base;
+    }
+
+
+   _startHealthLoop() {
+        if (this._timer) clearTimeout(this._timer);
+
+        const tick = async () => {
+            const { ok, error } = await this.checkConnection({ silent: true });
+
+            if (ok) {
+                this._failCount = 0;
+                this._hasEverConnected = true;
+                this.state.status = "CONNECTED";
+
+                //Aviso UNA vez cuando cambia a conectado
+                this._notifyStatusOnce("CONNECTED");
+
+                this._timer = setTimeout(tick, this.HEALTHCHECK_MS_CONNECTED);
+                return;
+            }
+
+            this.state.status = "DISCONNECTED";
+            this._failCount += 1;
+
+            //Solo avisar UNA vez de desconexión, y solo tras N fallos seguidos
+            if (this._failCount >= this.FAILS_BEFORE_POPUP) {
+                this._notifyStatusOnce("DISCONNECTED", error);
+            }
+
+            console.log(
+                `[SITECOSL] Disconnected (fail #${this._failCount}). Retrying in ${this.RETRY_MS_DISCONNECTED}ms`,
+                error || ""
+            );
+
+            this._timer = setTimeout(tick, this.RETRY_MS_DISCONNECTED);
+        };
+
+        tick();
+    }
+
+    _notifyStatusOnce(newStatus, details = null) {
+        // Si no ha cambiado, no hagas nada
+        if (this._lastStatus === newStatus) return;
+
+        this._lastStatus = newStatus;
+
+        if (newStatus === "CONNECTED") {
+            // resetea el de desconectado para futuros cambios
+            this._shownDisconnectedOnce = false;
+
+            if (!this._shownConnectedOnce) {
+                this._shownConnectedOnce = true;
+                this.showInfo(
+                    _t("Connected to Siteco Cash Machine."),
+                    _t("Cash Machine")
+                );
+            }
+            return;
+        }
+
+        if (newStatus === "DISCONNECTED") {
+            // resetea el de conectado para futuros cambios
+            this._shownConnectedOnce = false;
+
+            if (!this._shownDisconnectedOnce) {
+                this._shownDisconnectedOnce = true;
+                this.showError(
+                    this._makeConnectionErrorMessage(details),
+                    _t("Cash Machine Error")
+                );
+            }
+        }
+    }
+    showInfo(msg, title) {
+    this.dialog.add(AlertDialog, {
+        title: title || _t("Information"),
+        body: msg,
+    });
+}
+
+
+
 }
