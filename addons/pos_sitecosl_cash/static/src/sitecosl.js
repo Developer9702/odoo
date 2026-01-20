@@ -20,6 +20,9 @@ export class SitecoServicioCobroService extends PaymentInterface {
         this.dialog = this.env.services.dialog;
         this.logger = new Logger("pos_sitecosl_cash");
 
+        //Flag para indicar si está en proceso de cobro o no
+        this._paymentInProgress = true/false;
+
         //Timers conexion y health check
         this._timer = null;
         this._failCount = 0;
@@ -91,6 +94,7 @@ export class SitecoServicioCobroService extends PaymentInterface {
 
     // Esto lo llamará Odoo cuando intentes cobrar con este método
     async send_payment_request() {
+        console.log("[SITECO SL ]: LLEGA EL INTENTO DE COBRO");
         // Por ahora solo validamos conexión
         if (this.state.status !== "CONNECTED") {
             await this.checkConnection();
@@ -163,8 +167,11 @@ export class SitecoServicioCobroService extends PaymentInterface {
                 `[SITECOSL] Disconnected (fail #${this._failCount}). Retrying in ${this.RETRY_MS_DISCONNECTED}ms`,
                 error || ""
             );
-
+            //Si está en proceso de pago, no se consulta el estado.
+            if(this._paymentInProgress){
             this._timer = setTimeout(tick, this.RETRY_MS_DISCONNECTED);
+            return;
+            }
         };
 
         tick();
