@@ -1,17 +1,18 @@
 import { PaymentInterface } from "@point_of_sale/app/utils/payment/payment_interface"; //la clase base que Odoo usa para integrar “terminales” o métodos de pago especiales.
-//import { uuidv4 } from "@point_of_sale/utils";
+import { uuidv4 } from "@point_of_sale/utils";
 //import { CancelDialog } from "@pos_sitecosl_cash/app/components/cancel_dialog";
 import { reactive } from "@odoo/owl"; //Framework UI de Odoo
 import { AlertDialog } from "@web/core/confirmation_dialog/confirmation_dialog"; //Popup error o info
 import { _t } from "@web/core/l10n/translation"; //Traducciones
-//import { sortBy } from "@web/core/utils/arrays"; //Ordenar arrays
-//import { browser } from "@web/core/browser/browser"; //Info navegador
-//import { ask } from "@point_of_sale/app/utils/make_awaitable_dialog";
+import { sortBy } from "@web/core/utils/arrays"; //Ordenar arrays
+import { browser } from "@web/core/browser/browser"; //Info navegador
+import { ask } from "@point_of_sale/app/utils/make_awaitable_dialog";
 import { Logger } from "@bus/workers/bus_worker_utils"; //Archivo logger
-import { registry } from "@web/core/registry";
 
 //Propios de siteco
-import { appInfoPing } from "@pos_sitecosl_cash/utils/sitecosl_soap";
+import { appInfo  } from "@pos_sitecosl_cash/utils/sitecosl_soap";
+
+console.log("[SITECOSL] sitecosl.js loaded");
 
 export class SitecoServicioCobroService extends PaymentInterface {
    setup() {
@@ -23,6 +24,8 @@ export class SitecoServicioCobroService extends PaymentInterface {
             status: "DISCONNECTED", // CONNECTED | DISCONNECTED
         });
 
+        console.log("[SITECOSL] setup() called", this.payment_method_id);
+
         // Comprueba conexión al iniciar el servicio
         this.checkConnection();
     }
@@ -31,21 +34,28 @@ export class SitecoServicioCobroService extends PaymentInterface {
         return this.payment_method_id.sitecosl_host_address || "127.0.0.1:8080";
     }
 
-     async checkConnection() {
+    async checkConnection() {
         try {
-            const ok = await appInfoPing(this.hostAddress);
-            console.log("[SITECOSL] AppInfo ok?", ok, "host:", this.hostAddress);
+        const ok = await appInfo(this.hostAddress);
 
-            this.state.status = ok ? "CONNECTED" : "DISCONNECTED";
-            if (!ok) {
-                this.showError(_t("Siteco service is not responding (AppInfo)."));
-            }
+        console.log(
+            "[SITECOSL] AppInfo:",
+            ok ? "CONNECTED" : "DISCONNECTED",
+            "host:",
+            this.hostAddress
+        );
+
+        this.state.status = ok ? "CONNECTED" : "DISCONNECTED";
+        if (!ok) {
+            this.showError(_t("Siteco service is not responding (AppInfo)."));
+        }
         } catch (e) {
             this.state.status = "DISCONNECTED";
-            console.error("[SITECOSL] AppInfo error:", e);
+            console.error("[SITECOSL] AppInfo ERROR:", e);
             this.showError(_t("Failed to connect to Siteco service (AppInfo)."));
         }
     }
+
 
     // Esto lo llamará Odoo cuando intentes cobrar con este método
     async send_payment_request() {
@@ -67,11 +77,10 @@ export class SitecoServicioCobroService extends PaymentInterface {
         return true;
     }
 
-       showError(msg, title) {
+    showError(msg, title) {
         this.dialog.add(AlertDialog, {
             title: title || _t("Cash Machine Error"),
             body: msg,
         });
     }
 }
-registry.category("pos_payment_methods").add("sitecosl_cash", SitecoServicioCobroService);

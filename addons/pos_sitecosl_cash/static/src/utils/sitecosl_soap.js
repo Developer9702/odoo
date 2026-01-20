@@ -1,7 +1,8 @@
-//Trasport Layer (Enviar/Recibir)
+//Transport Layer (Enviar/Recibir)
+/** @odoo-module **/
+import { rpc } from "@web/core/network/rpc";
 
 const SITECOSL_NS = "http://Servidor.net.sitecosl.desarrollo/";
-
 function buildSoapEnvelope(innerXml) {
     return `<?xml version="1.0" encoding="utf-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
@@ -52,15 +53,10 @@ export async function callSitecoslSoap({ hostAddress, action, bodyInnerXml, time
     return text;
 }
 
-export async function appInfoPing(hostAddress) {
-    const text = await callSitecoslSoap({
-        hostAddress,
-        // Si hace falta SOAPAction:
-        // action: "http://Servidor.net.sitecosl.desarrollo/itfServicioCobro/AppInfoRequest",
-        bodyInnerXml: "<tns:AppInfo/>",
-        timeoutMs: 5000,
+export async function appInfo(hostAddress) {
+    const result = await rpc("/pos_sitecosl_cash/appinfo", {
+        host_address: hostAddress,
     });
-    console.log("[SITECOSL] AppInfo response (first 300):", text.slice(0, 300));
-
-    return text.includes("AppInfoResponse");
+    console.log("[SITECOSL] AppInfo via Odoo:", result);
+    return !!result.ok;
 }

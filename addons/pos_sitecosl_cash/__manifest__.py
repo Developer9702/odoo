@@ -11,7 +11,8 @@
     'assets': {
         'point_of_sale._assets_pos': [
             'pos_sitecosl_cash/static/src/sitecosl.js',
-              "pos_sitecosl_cash/static/src/utils/sitecosl_soap.js",
+            "pos_sitecosl_cash/static/src/utils/sitecosl_soap.js",
+            "pos_sitecosl_cash/static/src/app/services/pos_store.js",
         ],
         'web.assets_unit_tests': [
             'pos_sitecosl_cash/static/tests/**/*',
