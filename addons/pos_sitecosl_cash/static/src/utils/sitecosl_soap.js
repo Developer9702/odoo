@@ -58,3 +58,23 @@ export async function appInfo(hostAddress) {
     console.log("[SITECOSL] AppInfo via Odoo:", result);
     return result; // ✅ devolver el objeto, NO boolean
 }
+
+export async function sitecoStartPayment(hostAddress, amountCents) {
+    return await rpc("/pos_sitecosl_cash/pay/start", {
+        host_address: hostAddress,
+        amount_cents: amountCents,
+    });
+}
+
+export async function sitecoGetPaymentStatus(hostAddress, operationId) {
+    return await rpc("/pos_sitecosl_cash/pay/status", {
+        host_address: hostAddress,
+        operation_id: operationId,
+    });
+}
+
+export async function sitecoCancelPayment(hostAddress) {
+    return await rpc("/pos_sitecosl_cash/pay/cancel", {
+        host_address: hostAddress,
+    });
+}
