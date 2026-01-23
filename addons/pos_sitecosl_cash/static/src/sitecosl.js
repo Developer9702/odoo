@@ -1,3 +1,4 @@
+/** @odoo-module **/
 import { PaymentInterface } from "@point_of_sale/app/utils/payment/payment_interface"; //la clase base que Odoo usa para integrar “terminales” o métodos de pago especiales.
 import { uuidv4 } from "@point_of_sale/utils";
 //import { CancelDialog } from "@pos_sitecosl_cash/app/components/cancel_dialog";
@@ -8,6 +9,8 @@ import { sortBy } from "@web/core/utils/arrays"; //Ordenar arrays
 import { browser } from "@web/core/browser/browser"; //Info navegador
 import { ask } from "@point_of_sale/app/utils/make_awaitable_dialog";
 import { Logger } from "@bus/workers/bus_worker_utils"; //Archivo logger
+import { patch } from "@web/core/utils/patch";
+import { PosPayment } from "@point_of_sale/app/models/pos_payment";
 
 //Propios de siteco
 import {appInfo,
@@ -40,7 +43,7 @@ export class SitecoServicioCobroService extends PaymentInterface {
         this._shownDisconnectedOnce = false;
         this._lastStatus = null; // "CONNECTED" | "DISCONNECTED"
 
-        // tiempos (ajústalos a gusto)
+        // tiempos para revisar la conexión con la máquina
         this.RETRY_MS_DISCONNECTED = 5000;   // cuando falla
         this.HEALTHCHECK_MS_CONNECTED = 30000; // cuando va bien
         this.FAILS_BEFORE_POPUP = 3;        // umbral
@@ -197,140 +200,220 @@ export class SitecoServicioCobroService extends PaymentInterface {
     }
 
 
-    async sendPaymentRequest() {
-        console.log("[SITECOSL] send_payment_request()");
-       
-        // 1) aseguramos conexión (si estaba desconectado)
+   async sendPaymentRequest() {
+        console.log("[SITECOSL] sendPaymentRequest()");
+
+        // 1) Verificar conexión
         if (this.state.status !== "CONNECTED") {
             const { ok } = await this.checkConnection({ silent: false });
             this.state.status = ok ? "CONNECTED" : "DISCONNECTED";
             if (!ok) return false;
         }
+
         const order = this.pos.getOrder();
-        const line = this.paymentLine || null;
+        const line = this.paymentLine;
 
-        if (!line) {
-            this.showError(_t("No active payment line found for Siteco."));
-            return false;
-        }
-
-        this._setLineStatus(line, "waiting");
-       
         if (!order || !line) {
             this.showError(_t("No active payment line found for Siteco."));
             return false;
         }
 
-        // Importe de la línea en céntimos
+        // Importe en céntimos
         const cents = Math.round(line.amount * Math.pow(10, this.pos.currency.decimal_places));
         if (!cents || cents <= 0) {
             this.showError(_t("Invalid amount for Siteco payment."));
             return false;
         }
 
+        // Inicializa flags
         this._paymentInProgress = true;
         this._cancelRequested = false;
         this._currentOperationId = null;
 
+        // Estado equivalente a C#
+        let cobro = true;        // en C# empieza true y pasa a false si cancelas o timeout
+        let cancelada = false;   // cancelOP
+        let deuda = cents;       // por defecto si falla
+
+        this._setLineStatus(line, "waiting");
+
         try {
-            // 2) Start cobro (backend ya hace el bucle de op_id hasta 40s)
+            // 2) CobrarHasta + ConsultaCodigoUltimaOperacionVenta (hasta 40s) -> backend
             const startRes = await sitecoStartPayment(this.hostAddress, cents);
-            if (!startRes?.ok) {
+            if (!startRes?.ok || !startRes.operation_id) {
+                this._setLineStatus(line, "retry");
                 this.showError(_t("Failed to start Siteco payment.") + "\n\n" + (startRes?.error || ""));
                 return false;
             }
 
-            const operationId = startRes.operation_id;
-            if (!operationId) {
-                this.showError(_t("Siteco did not return an operation id."));
-                return false;
-            }
-            this._currentOperationId = operationId;
+            const opId = startRes.operation_id;
+            this._currentOperationId = opId;
 
-            // 3) Poll status (como C#)
-            const TIMEOUT_MS = 60000; // similar a tu param.TIME_OPCURSO (1 min por defecto)
+            // 3) Mientras SUB_EST_NCRSO hasta TIME_OPCURSO (1 min) o cancel
+            const TIME_OPCURSO_MS = 60000; // 1 min como param.TIME_OPCURSO
             const POLL_MS = 500;
             const startedAt = Date.now();
 
             let st = null;
 
-        while (Date.now() - startedAt < TIMEOUT_MS) {
-            // Si el usuario pidió cancelar, cancelamos YA y salimos
+            while (Date.now() - startedAt < TIME_OPCURSO_MS) {
+                // cancelación solicitada por UI
+                if (this._cancelRequested) {
+                    cancelada = true;
+                    cobro = false;
+                    break;
+                }
+
+                st = await sitecoGetPaymentStatus(this.hostAddress, opId);
+                if (!st?.ok) {
+                    this._setLineStatus(line, "retry");
+                    this.showError(_t("Failed to read Siteco payment status.") + "\n\n" + (st?.error || ""));
+                    return false;
+                }
+
+                console.log("[SITECOSL] status op=", opId, "state=", st.machine_state, "saldo=", st.saldo_cents);
+
+                // sigue en curso
+                if (st.machine_state === "SUB_EST_NCRSO") {
+                    await new Promise((r) => setTimeout(r, POLL_MS));
+                    continue;
+                }
+
+                // ya no está en curso => salimos y evaluamos
+                break;
+            }
             if (this._cancelRequested) {
-                await this._cancelAndWaitAbort(operationId);
+            await this._cancelAndWaitAbort(operationId);  // opcional pero recomendable si aún no lo hiciste
+            this._setLineStatus(line, "retry");
+            if (line.setAmount) line.setAmount(0); else line.amount = 0;
+            return false;
+        }
+
+            // 4) Si sigue en curso al salir del bucle (timeout) o cancelada -> CancelacionOperacion y esperar ABRTD
+            const stillInCourse = !st || st.machine_state === "SUB_EST_NCRSO";
+            if (stillInCourse) {
+                cancelada = cancelada || this._cancelRequested; // si venía de UI
+                cobro = false; // en C# si sigue en curso y sales del bucle -> cancelas y cobro=false
+
+                await this._cancelAndWaitAbort(opId);
+                // tras abortar, forzamos estado abortado “lógico”
+                st = { ...(st || {}), machine_state: "SUB_EST_ABRTD" };
+            } else if (this._cancelRequested) {
+                // si justo al final pidió cancelar, manda cancelar y espera ABRTD
+                cancelada = true;
+                cobro = false;
+                await this._cancelAndWaitAbort(opId);
+                st = { ...(st || {}), machine_state: "SUB_EST_ABRTD" };
+            }
+
+            // 5) DeudaFinalIdOperacion(opId)
+            // Si tu /pay/status YA devuelve deuda_cents FINAL, úsalo.
+            // Si no, crea /pay/debt y llámalo aquí.
+            let deudaRes = st;
+            if (typeof st?.deuda_cents === "undefined") {
+                // si NO tienes deuda en status, necesitarías sitecoGetFinalDebt(...)
+                // deudaRes = await sitecoGetFinalDebt(this.hostAddress, opId);
+                // if (!deudaRes?.ok) ...
+            }
+
+            deuda = deudaRes?.deuda_cents ?? 0;
+
+            // 6) Resultado EXACTO como C#
+            const estado = deuda === 0;
+
+            if (estado) {
+                // Solo marcamos DONE si realmente terminó finalizado, no abortado
+                if (st.machine_state === "SUB_EST_FNLZD" && !cancelada) {
+                    this._setLineStatus(line, "done");
+                    this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
+                    return true;
+                }
+
+                // deuda=0 pero abortado/cancelado => NO es venta correcta
                 this._setLineStatus(line, "retry");
+                if (line.setAmount) line.setAmount(0); else line.amount = 0;
                 this.showError(_t("Payment cancelled."), _t("Cash Machine Error"));
                 return false;
-            }
-
-            st = await sitecoGetPaymentStatus(this.hostAddress, operationId);
-            if (!st?.ok) {
+            } else {
+                // deuda > 0
                 this._setLineStatus(line, "retry");
-                this.showError(_t("Failed to read Siteco payment status.") + "\n\n" + (st?.error || ""));
+                const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
+                this.showError(_t("Payment not completed. Remaining debt: %s", deudaAmount), _t("Cash Machine Error"));
                 return false;
             }
-
-            console.log("[SITECOSL] status op=", operationId, "state=", st.machine_state, "saldo=", st.saldo_cents, "deuda=", st.deuda_cents);
-
-            if (st.machine_state === "SUB_EST_NCRSO") {
-                await new Promise((r) => setTimeout(r, POLL_MS));
-                continue;
-            }
-
-            // ✅ ya no está en curso: salimos del loop y procesamos resultado
-            break;
-        }
-
-        // Timeout (no rompió por estado final)
-        if (!st || st.machine_state === "SUB_EST_NCRSO") {
-            await this._cancelAndWaitAbort(operationId);
-            this._setLineStatus(line, "retry");
-            this.showError(_t("Payment timeout. Operation cancelled."), _t("Cash Machine Error"));
-            return false;
-        }
-
-        // Si el usuario pidió cancelar justo al final, la cancel manda
-        if (this._cancelRequested) {
-            await this._cancelAndWaitAbort(operationId);
-            this._setLineStatus(line, "retry");
-            this.showError(_t("Payment cancelled."), _t("Cash Machine Error"));
-            return false;
-        }
-
-        // Resultado final
-        const deuda = st.deuda_cents ?? 0;
-
-        if (deuda === 0) {
-            this._setLineStatus(line, "done");
-            this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
-            return true;
-        }
-
-        // deuda > 0
-        this._setLineStatus(line, "retry");
-        const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
-        this.showError(_t("Payment not completed. Remaining debt: %s", deudaAmount), _t("Cash Machine Error"));
-        return false;
         } catch (e) {
-            console.error("[SITECOSL] send_payment_request ERROR:", e);
+            console.error("[SITECOSL] sendPaymentRequest ERROR:", e);
+            this._setLineStatus(line, "retry");
             this.showError(_t("Unexpected error during payment."), _t("Cash Machine Error"));
             return false;
         } finally {
+            // Resolver cancel si alguien pulsó “Forzar terminación”
+            if (this.cancellationResolver) {
+                this.cancellationResolver(false);
+                this.cancellationResolver = null;
+            }
+
             this._paymentInProgress = false;
             this._currentOperationId = null;
             this._cancelRequested = false;
         }
     }
 
-    //En caso de que se cancele el pago
-    async sendPaymentCancel() {
-        return await this._requestCancelFromUI();
+    async _cancelAndWaitAbort(operationId) {
+        try {
+            await sitecoCancelPayment(this.hostAddress);
+
+            const POLL_MS = 500;
+            const TIMEOUT_MS = 15000;
+            const startedAt = Date.now();
+
+            while (Date.now() - startedAt < TIMEOUT_MS) {
+                const st = await sitecoGetPaymentStatus(this.hostAddress, operationId);
+                if (st?.ok && st.machine_state === "SUB_EST_ABRTD") {
+                    if (this.cancellationResolver) {
+                        this.cancellationResolver(false);
+                        this.cancellationResolver = null;
+                    }
+                    return true;
+                }
+                await new Promise((r) => setTimeout(r, POLL_MS));
+            }
+        } catch (e) {
+            console.error("[SITECOSL] cancel/wait ERROR:", e);
+        }
+        return false;
     }
 
-    async send_payment_cancel() {
-        return await this._requestCancelFromUI();
+
+    //En caso de que se cancele el pago
+  async sendPaymentCancel(order, uuid) {
+        console.log("[SITECOSL] sendPaymentCancel called", { uuid });
+
+        this._cancelRequested = true;
+
+        const line = order.payment_ids.find((l) => l.uuid === uuid);
+        if (line) {
+            this._setLineStatus(line, "waitingCancel");
+        }
+
+        // Si hay operación activa → cancelar YA
+        if (this._paymentInProgress && this._currentOperationId) {
+            try {
+                await sitecoCancelPayment(this.hostAddress);
+                console.log("[SITECOSL] CancelacionOperacion sent");
+
+                // Esperar a ABORTED como en C#
+                await this._cancelAndWaitAbort(this._currentOperationId);
+            } catch (e) {
+                console.error("[SITECOSL] sendPaymentCancel ERROR:", e);
+            }
+        }
+
+        return true; 
     }
-    
+
+
+
     async _cancelAndWaitAbort(operationId) {
         try {
             await sitecoCancelPayment(this.hostAddress);
@@ -352,30 +435,6 @@ export class SitecoServicioCobroService extends PaymentInterface {
         }
         return false;
     }
-
-    async _requestCancelFromUI() {
-        console.log("[SITECOSL] CANCEL requested by UI");
-
-        this._cancelRequested = true;
-
-        // si hay línea activa, cambia estado visual a "cancelando"
-        const line = this.paymentLine;
-        if (line) {
-            this._setLineStatus(line, "waitingCancel");
-        }
-
-        // ✅ cancelar YA si ya hay operación activa
-        if (this._paymentInProgress && this._currentOperationId) {
-            try {
-                const res = await sitecoCancelPayment(this.hostAddress);
-                console.log("[SITECOSL] CancelacionOperacion sent:", res);
-            } catch (e) {
-                console.error("[SITECOSL] CancelacionOperacion ERROR:", e);
-            }
-        }
-        return true;
-    }
-
     // ---------------------------
     // UI helpers
     // ---------------------------
@@ -393,4 +452,5 @@ export class SitecoServicioCobroService extends PaymentInterface {
         });
     }
 }
+
 
