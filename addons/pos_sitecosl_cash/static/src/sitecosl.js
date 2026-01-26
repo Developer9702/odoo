@@ -305,13 +305,21 @@ export class SitecoServicioCobroService extends PaymentInterface {
             // 5) estado final exacto:
             //    solo éxito si FINALIZADO + deuda 0 + NO cancelada
             const isSuccess =
-                st.machine_state === "SUB_EST_FNLZD" &&
-                deuda === 0 &&
-                !cancelada;
+                st.machine_state === "SUB_EST_FNLZD" && !cancelada;
 
             if (isSuccess) {
                 this._setLineStatus(line, "done");
-                this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
+
+                  // Si hay deuda, avisamos pero NO fallamos
+                    if (deuda > 0) {
+                        const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
+                        this.showInfo(
+                            _t("Payment completed, but pending change to return: %s", deudaAmount),
+                            _t("Cash Machine")
+                        );
+                    } else {
+                        this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
+                    }
                 return true;
             }
 
