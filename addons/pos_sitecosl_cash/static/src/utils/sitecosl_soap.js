@@ -78,3 +78,10 @@ export async function sitecoCancelPayment(hostAddress) {
         host_address: hostAddress,
     });
 }
+
+//Inventario / recuento (nuevo)
+export async function sitecoGetInventory(hostAddress) {
+    return await rpc("/pos_sitecosl_cash/cash/inventory", {
+        host_address: hostAddress,
+    });
+}

@@ -17,7 +17,13 @@ import {appInfo,
         sitecoStartPayment,
         sitecoGetPaymentStatus,
         sitecoCancelPayment,
+        sitecoGetInventory ,
 } from "@pos_sitecosl_cash/utils/sitecosl_soap";
+
+this.state = reactive({
+  status: "DISCONNECTED",
+  inventory: [],
+});
 
 console.log("[SITECOSL] sitecosl.js loaded");
 
@@ -106,7 +112,7 @@ export class SitecoServicioCobroService extends PaymentInterface {
         if (this._timer) clearTimeout(this._timer);
 
         const tick = async () => {
-            // ✅ durante cobro, no molestamos con health-check
+            // durante cobro, no molestamos con health-check
             if (this._paymentInProgress) {
                 this._timer = setTimeout(tick, this.HEALTHCHECK_MS_CONNECTED);
                 return;
@@ -119,6 +125,8 @@ export class SitecoServicioCobroService extends PaymentInterface {
                 this.state.status = "CONNECTED";
                 this._notifyStatusOnce("CONNECTED");
                 this._timer = setTimeout(tick, this.HEALTHCHECK_MS_CONNECTED);
+                await this.refreshInventory();
+
                 return;
             }
 
@@ -421,6 +429,36 @@ export class SitecoServicioCobroService extends PaymentInterface {
             body: msg,
         });
     }
+
+   getDenominationsWithStatus(status) {
+    // para compatibilidad con tu XML/UI (si quieres usarlo igual que Glory)
+    // aquí status lo puedes interpretar como "BILLE" / "MONEDA" / etc
+    if (status === "BILLS") {
+        return this.state.inventory.filter((d) => d.support_type === "SUB_SPT_BILLE");
+    }
+    if (status === "COINS") {
+        return this.state.inventory.filter((d) => d.support_type === "SUB_SPT_MONED");
+    }
+    return this.state.inventory;
+}
+
+
+    async refreshInventory() {
+    try {
+        const res = await sitecoGetInventory(this.hostAddress);
+        if (res?.ok) {
+            // ordena por value
+            this.state.inventory = (res.inventory || []).sort((a, b) => a.value_cents - b.value_cents);
+            console.log("[SITECOSL] inventory loaded", this.state.inventory);
+        } else {
+            console.warn("[SITECOSL] inventory load failed", res?.error);
+        }
+    } catch (e) {
+        console.error("[SITECOSL] inventory ERROR", e);
+    }
+}
+
+
 }
 
 

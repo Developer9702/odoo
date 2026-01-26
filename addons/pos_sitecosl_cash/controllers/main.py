@@ -3,6 +3,7 @@ import logging
 import requests
 import re
 import time
+import xml.etree.ElementTree as ET
 
 from odoo import http
 
@@ -10,6 +11,72 @@ _logger = logging.getLogger(__name__)
 
 
 class PosSitecoslCashController(http.Controller):
+    
+    @staticmethod
+    def _is_non_recyclable_hopper(hopper: str) -> bool:
+        """
+        Hoppers que NO se usan para dar cambio (no reciclables).
+        Ajusta la lista si en tu instalación hay más códigos.
+        """
+        return (hopper or "").upper() in {"HOPPER_CM", "HOPPER_CB"}
+
+    @staticmethod
+    def _group_inventory_by_hopper_value(inventory_rows):
+        """
+        Agrupa por (hopper, value_cents).
+        Si vienen duplicados B-00/B-01 con el mismo total, evita duplicar:
+        - total_cents: máximo (o el que no sea 0)
+        - pieces: recalculado desde total/value
+        """
+        grouped = {}
+        for r in inventory_rows:
+            hopper = r.get("hopper")
+            value_cents = int(r.get("value_cents") or 0)
+            total_cents = int(r.get("total_cents") or 0)
+            key = (hopper, value_cents)
+
+            if key not in grouped:
+                grouped[key] = {
+                    "hopper": hopper,
+                    "value_cents": value_cents,
+                    "total_cents": total_cents,
+                }
+            else:
+                # evita duplicar B-00/B-01: nos quedamos con el mayor
+                grouped[key]["total_cents"] = max(grouped[key]["total_cents"], total_cents)
+
+        # recalcular pieces a partir del total final
+        for v in grouped.values():
+            vc = v["value_cents"]
+            v["pieces"] = int(v["total_cents"] / vc) if vc else 0
+
+        return sorted(grouped.values(), key=lambda x: (x["hopper"] or "", x["value_cents"]))
+
+
+    @staticmethod
+    def _parse_rows(xml_text: str):
+        ns_strip = lambda t: t.split("}", 1)[-1] if "}" in t else t
+        root = ET.fromstring(xml_text)
+        rows = []
+        for ret in root.iter():
+            if ns_strip(ret.tag) != "return":
+                continue
+            row = {}
+            for col in list(ret):
+                if ns_strip(col.tag) != "columnas":
+                    continue
+                k = v = None
+                for child in list(col):
+                    tag = ns_strip(child.tag)
+                    if tag == "clave":
+                        k = (child.text or "").strip()
+                    elif tag == "valor":
+                        v = (child.text or "").strip()
+                if k:
+                    row[k] = v
+            rows.append(row)
+        return rows
+    
 
     @http.route("/pos_sitecosl_cash/appinfo", type="jsonrpc", auth="user")
     def sitecosl_appinfo(self, host_address):
@@ -43,13 +110,13 @@ class PosSitecoslCashController(http.Controller):
     # -------------------------
     def _soap_envelope(self, inner_xml: str) -> str:
         return f"""<?xml version="1.0" encoding="utf-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:tns="http://Servidor.net.sitecosl.desarrollo/">
-  <soapenv:Header/>
-  <soapenv:Body>
-    {inner_xml}
-  </soapenv:Body>
-</soapenv:Envelope>"""
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                        xmlns:tns="http://Servidor.net.sitecosl.desarrollo/">
+        <soapenv:Header/>
+        <soapenv:Body>
+            {inner_xml}
+        </soapenv:Body>
+        </soapenv:Envelope>"""
 
     def _soap_call(self, host_address: str, inner_xml: str, timeout: int = 10) -> str:
         url = f"http://{host_address}/ServicioCobro/ServicioCobro"
@@ -72,7 +139,6 @@ class PosSitecoslCashController(http.Controller):
     def _extract_estado(self, xml_text: str):
         m = re.search(r"(SUB_EST_[A-Z0-9_]+)", xml_text)
         return m.group(1) if m else None
-
     # -------------------------
     # ✅ PAY START
     # -------------------------
@@ -147,4 +213,177 @@ class PosSitecoslCashController(http.Controller):
             return {"ok": True}
         except Exception as e:
             _logger.exception("[SITECOSL] pay/cancel failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+   # -------------------------
+   # ✅ INVENTORY
+   # -------------------------
+    @http.route("/pos_sitecosl_cash/cash/pagadores_fraccion", type="jsonrpc", auth="user")
+    def sitecosl_pagadores_fraccion(self, host_address):
+        """
+        Mantenimiento_ConsultaPagadoresFraccion:
+        devuelve qué pagadores/hoppers y fracciones existen (cod_fraccion).
+        """
+        try:
+            xml = self._soap_call(host_address, "<tns:Mantenimiento_ConsultaPagadoresFraccion/>", timeout=15)
+            rows = self._parse_rows(xml)
+            return {"ok": True, "rows": rows}
+        except Exception as e:
+            _logger.exception("[SITECOSL] pagadores_fraccion failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    @http.route("/pos_sitecosl_cash/cash/pagadores_denominacion", type="jsonrpc", auth="user")
+    def sitecosl_pagadores_denominacion(self, host_address):
+        """
+        Mantenimiento_ConsultaPagadoresDenominacion:
+        devuelve el valor (centimos) y la cantidad/suma por hopper.
+        """
+        try:
+            xml = self._soap_call(host_address, "<tns:Mantenimiento_ConsultaPagadoresDenominacion/>", timeout=15)
+            rows = self._parse_rows(xml)
+            return {"ok": True, "rows": rows}
+        except Exception as e:
+            _logger.exception("[SITECOSL] pagadores_denominacion failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    @http.route("/pos_sitecosl_cash/cash/tabla_fracciones", type="jsonrpc", auth="user")
+    def sitecosl_tabla_fracciones(self, host_address):
+        """
+        Mantenimiento_TablaFracciones:
+        devuelve descripción y mapeo cod_fraccion -> desc/soporte.
+        """
+        try:
+            xml = self._soap_call(host_address, "<tns:Mantenimiento_TablaFracciones/>", timeout=15)
+            rows = self._parse_rows(xml)
+            return {"ok": True, "rows": rows}
+        except Exception as e:
+            _logger.exception("[SITECOSL] tabla_fracciones failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
+    @http.route("/pos_sitecosl_cash/cash/inventory", type="jsonrpc", auth="user")
+    def sitecosl_cash_inventory(self, host_address):
+        """
+        Devuelve inventario normalizado para el POS:
+        [
+          {
+            "hopper": "HOPPER_1000",
+            "cod_fraccion": "EUR010+02-B-00",
+            "value_cents": 1000,
+            "total_cents": 13000,
+            "pieces": 13,
+            "support_type": "SUB_SPT_BILLE",
+            "label_long": "DIEZ EUROS VIEJO",
+            "label_short": "10 EUR VIEJO"
+          },
+          ...
+        ]
+        """
+        try:
+            # 1) ConsultaPagadoresFraccion -> (hopper, cod_fraccion, suma_valor?)
+            xml_pf = self._soap_call(host_address, "<tns:Mantenimiento_ConsultaPagadoresFraccion/>", timeout=15)
+            rows_pf = self._parse_rows(xml_pf)
+
+            # 2) ConsultaPagadoresDenominacion -> (hopper, valor_fraccion, suma_valor)
+            xml_pd = self._soap_call(host_address, "<tns:Mantenimiento_ConsultaPagadoresDenominacion/>", timeout=15)
+            rows_pd = self._parse_rows(xml_pd)
+
+            # 3) TablaFracciones -> (cod_fraccion, desc l/c, tipo soporte)
+            xml_tf = self._soap_call(host_address, "<tns:Mantenimiento_TablaFracciones/>", timeout=15)
+            rows_tf = self._parse_rows(xml_tf)
+
+            # Map cod_fraccion -> metadata
+            frac_meta = {}
+            for r in rows_tf:
+                cod = r.get("ALIAS_CAMPO_COD_FRACCION")
+                if not cod:
+                    continue
+                frac_meta[cod] = {
+                    "support_type": r.get("ALIAS_CAMPO_TIPO_SOPORTE"),
+                    "label_long": r.get("ALIAS_CAMPO_DESCRIPCIONL"),
+                    "label_short": r.get("ALIAS_CAMPO_DESCRIPCIONC"),
+                }
+
+            # Map hopper+value -> total_cents (de denominacion)
+            # (valor_fraccion ya viene en "céntimos": 2000, 1000, 50, 20, etc.)
+            denom_by_hopper_value = {}
+            for r in rows_pd:
+                hopper = r.get("ALIAS_CAMPO_COD_HOPPER")
+                value_cents = r.get("ALIAS_CAMPO_VALOR_FRACCION")
+                total_cents = r.get("ALIAS_CAMPO_SUMA_VALOR")
+                if not hopper or value_cents is None:
+                    continue
+                try:
+                    value_cents_i = int(value_cents)
+                    total_cents_i = int(total_cents or 0)
+                except Exception:
+                    continue
+                denom_by_hopper_value[(hopper, value_cents_i)] = total_cents_i
+
+            # Para estimar value_cents de un cod_fraccion:
+            # Ej: EUR010+02-B-00 => 10 EUR => 1000 cents
+            # Ej: EUR050+00-M-00 => 50 cents => 50
+            # Regla: EUR + 3 dígitos -> euros/centimos según soporte.
+            # Pero ya tienes "valor_fraccion" en ConsultaPagadoresDenominacion,
+            # así que hacemos join por hopper usando la relación (hopper,cod_fraccion) y buscamos value más probable:
+            # si un hopper tiene varias value (como HOPPER_200_100) nos quedamos con las que "casan" con el código.
+            def infer_value_cents_from_cod(cod_fraccion: str):
+                # cod_fraccion: "EUR010+02-B-00" or "EUR050+00-M-00"
+                m = re.search(r"EUR(\d{3})\+", cod_fraccion or "")
+                if not m:
+                    return None
+                n = int(m.group(1))  # 010, 050, 200, 500...
+                # Si es billete (B) normalmente son euros => *100
+                if "+02-B" in cod_fraccion:
+                    return n * 100
+                # Si es moneda (M) puede ser céntimos o euros:
+                # EUR002+02-M-00 en tu tabla es 2 EUR => 200
+                if "+02-M" in cod_fraccion:
+                    return n * 100  # 2 -> 200, 1 -> 100
+                # EUR050+00-M-00 es 50 céntimos => 50
+                if "+00-M" in cod_fraccion:
+                    return n  # 50 -> 50, 20 -> 20, 10 -> 10, 5 -> 5...
+                return None
+
+            # Construir inventario final usando PagadoresFraccion
+            inventory = []
+            for r in rows_pf:
+                hopper = r.get("ALIAS_CAMPO_COD_HOPPER")
+                cod = r.get("ALIAS_CAMPO_COD_FRACCION")
+                if not hopper or not cod:
+                    continue
+
+                #OMITIR NO-RECICLABLES (CM / CB)
+                if self._is_non_recyclable_hopper(hopper):
+                    continue
+
+                value_cents = infer_value_cents_from_cod(cod) or 0
+
+                total_cents = denom_by_hopper_value.get((hopper, value_cents))
+                if total_cents is None:
+                    # fallback: el propio SUMA_VALOR de PagadoresFraccion a veces trae el total
+                    try:
+                        total_cents = int(r.get("ALIAS_CAMPO_SUMA_VALOR") or 0)
+                    except Exception:
+                        total_cents = 0
+
+                pieces = int(total_cents / value_cents) if value_cents else 0
+
+                meta = frac_meta.get(cod, {})
+                inventory.append({
+                    "hopper": hopper,
+                    "cod_fraccion": cod,
+                    "value_cents": int(value_cents),
+                    "total_cents": int(total_cents),
+                    "pieces": int(pieces),
+                    "support_type": meta.get("support_type"),
+                    "label_long": meta.get("label_long"),
+                    "label_short": meta.get("label_short"),
+                })
+
+           # return {"ok": True, "inventory": inventory}
+            grouped_inventory = self._group_inventory_by_hopper_value(inventory)
+            return {"ok": True, "inventory": grouped_inventory}
+
+        except Exception as e:
+            _logger.exception("[SITECOSL] cash/inventory failed: %s", e)
             return {"ok": False, "error": str(e)}
