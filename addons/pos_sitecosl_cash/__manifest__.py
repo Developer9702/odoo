@@ -9,10 +9,16 @@
         'views/pos_payment_method_views.xml',
     ],
     'assets': {
+       # 'point_of_sale._assets_pos': [
+       #     'pos_sitecosl_cash/static/src/sitecosl.js',
+       #     "pos_sitecosl_cash/static/src/utils/sitecosl_soap.js",
+       #     "pos_sitecosl_cash/static/src/app/services/pos_store.js",
+       #     'pos_sitecosl_cash/static/src/patches/payment_screen_force_done_patch.js',  # 👈 AÑADIR
+       #     'pos_sitecosl_cash/static/src/patches/pos_payment_cancel_patch.js', 
+       # ],
         'point_of_sale._assets_pos': [
-            'pos_sitecosl_cash/static/src/sitecosl.js',
-            "pos_sitecosl_cash/static/src/utils/sitecosl_soap.js",
-            "pos_sitecosl_cash/static/src/app/services/pos_store.js",
+        'pos_sitecosl_cash/static/src/**/*.js',
+       # 'pos_sitecosl_cash/static/src/**/*.xml',
         ],
         'web.assets_unit_tests': [
             'pos_sitecosl_cash/static/tests/**/*',
