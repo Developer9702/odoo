@@ -208,7 +208,7 @@ export class SitecoServicioCobroService extends PaymentInterface {
     }
 
 
-   async sendPaymentRequest() {
+  async sendPaymentRequest() {
         console.log("[SITECOSL] sendPaymentRequest()");
 
         // 1) Verificar conexión
@@ -226,6 +226,9 @@ export class SitecoServicioCobroService extends PaymentInterface {
             return false;
         }
 
+        // 🔑 guardamos uuid para localizar la línea aunque cambie o se borre
+        const uuid = line.uuid;
+
         // Importe en céntimos
         const cents = Math.round(line.amount * Math.pow(10, this.pos.currency.decimal_places));
         if (!cents || cents <= 0) {
@@ -238,18 +241,20 @@ export class SitecoServicioCobroService extends PaymentInterface {
         this._cancelRequested = false;
         this._currentOperationId = null;
 
-        // Estado equivalente a C#
-        let cobro = true;        // en C# empieza true y pasa a false si cancelas o timeout
-        let cancelada = false;   // cancelOP
-        let deuda = cents;       // por defecto si falla
+        let cobro = true;
+        let cancelada = false;
 
-        this._setLineStatus(line, "waiting");
+        // siempre que toquemos la línea: la volvemos a buscar
+        let currentLine = this._getPaymentLineByUuid(uuid);
+        if (!currentLine) return false;
+
+        this._setLineStatus(currentLine, "waiting");
 
         try {
-            // 2) CobrarHasta + ConsultaCodigoUltimaOperacionVenta (hasta 40s) -> backend
             const startRes = await sitecoStartPayment(this.hostAddress, cents);
             if (!startRes?.ok || !startRes.operation_id) {
-                this._setLineStatus(line, "retry");
+                currentLine = this._getPaymentLineByUuid(uuid);
+                if (currentLine) this._setLineStatus(currentLine, "retry");
                 this.showError(_t("Failed to start Siteco payment.") + "\n\n" + (startRes?.error || ""));
                 return false;
             }
@@ -257,15 +262,23 @@ export class SitecoServicioCobroService extends PaymentInterface {
             const opId = startRes.operation_id;
             this._currentOperationId = opId;
 
-            // 3) Mientras SUB_EST_NCRSO hasta TIME_OPCURSO (1 min) o cancel
-            const TIME_OPCURSO_MS = 60000; // 1 min como param.TIME_OPCURSO
+            const TIME_OPCURSO_MS = 60000;
             const POLL_MS = 500;
             const startedAt = Date.now();
 
             let st = null;
 
             while (Date.now() - startedAt < TIME_OPCURSO_MS) {
-                // cancelación solicitada por UI
+                // si ya borraron la línea, paramos el flujo sin reventar
+                currentLine = this._getPaymentLineByUuid(uuid);
+                if (!currentLine) {
+                    console.warn("[SITECOSL] payment line removed during request, stopping", { uuid });
+                    this._cancelRequested = true; // por seguridad, marca cancel
+                    cancelada = true;
+                    cobro = false;
+                    break;
+                }
+
                 if (this._cancelRequested) {
                     cancelada = true;
                     cobro = false;
@@ -274,97 +287,106 @@ export class SitecoServicioCobroService extends PaymentInterface {
 
                 st = await sitecoGetPaymentStatus(this.hostAddress, opId);
                 if (!st?.ok) {
-                    this._setLineStatus(line, "retry");
+                    currentLine = this._getPaymentLineByUuid(uuid);
+                    if (currentLine) this._setLineStatus(currentLine, "retry");
                     this.showError(_t("Failed to read Siteco payment status.") + "\n\n" + (st?.error || ""));
                     return false;
                 }
 
                 console.log("[SITECOSL] status op=", opId, "state=", st.machine_state, "saldo=", st.saldo_cents);
 
-                // sigue en curso
                 if (st.machine_state === "SUB_EST_NCRSO") {
                     await new Promise((r) => setTimeout(r, POLL_MS));
                     continue;
                 }
-
-                // ya no está en curso => salimos y evaluamos
                 break;
             }
 
-          // 1) ¿Salimos por timeout (seguía NCRSO) o no tenemos st?
             const stillInCourse = !st || st.machine_state === "SUB_EST_NCRSO";
+            cancelada = cancelada || !!this._cancelRequested;
 
-            // 2) Si hubo cancelación pedida por UI en cualquier momento
-            cancelada = !!this._cancelRequested;
-
-            // 3) Si sigue en curso (timeout) o si el usuario pidió cancelación:
-            //    -> CancelacionOperacion + esperar ABRTD
             if (stillInCourse || cancelada) {
-                // en C#: si sigue en curso o cancelOP => cobro=false y se cancela operación
                 await this._cancelAndWaitAbort(opId);
-
-                // forzamos estado "abortado" lógico (aunque el último st fuera NCRSO o null)
                 st = { ...(st || {}), machine_state: "SUB_EST_ABRTD" };
             }
 
-            // 4) deuda final
             const deuda = st?.deuda_cents ?? 0;
 
-            // 5) estado final exacto:
-            //    solo éxito si FINALIZADO + deuda 0 + NO cancelada
-            const isSuccess =
-                st.machine_state === "SUB_EST_FNLZD" && !cancelada;
+            const isSuccess = st.machine_state === "SUB_EST_FNLZD" && !cancelada;
 
             if (isSuccess) {
-                this._setLineStatus(line, "done");
+                currentLine = this._getPaymentLineByUuid(uuid);
+                if (currentLine) this._setLineStatus(currentLine, "done");
 
-                  // Si hay deuda, avisamos pero NO fallamos
-                    if (deuda > 0) {
-                        const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
-                        this.showInfo(
-                            _t("Payment completed, but pending change to return: %s", deudaAmount),
-                            _t("Cash Machine")
-                        );
-                    } else {
-                        this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
-                    }
+                if (deuda > 0) {
+                    const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
+                    this.showInfo(
+                        _t("Payment completed, but pending change to return: %s", deudaAmount),
+                        _t("Cash Machine")
+                    );
+                } else {
+                    this.showInfo(_t("Payment completed successfully."), _t("Cash Machine"));
+                }
                 return true;
             }
 
-            // 6) Si se canceló (UI o timeout) => NO éxito
+            // CANCEL / ABORT
             if (cancelada || st.machine_state === "SUB_EST_ABRTD") {
-                this._setLineStatus(line, "retry");
-                if (line.setAmount) line.setAmount(0);
-                else line.amount = 0;
-
-                this.showError(_t("Payment cancelled."), _t("Cash Machine Error"));
+                currentLine = this._getPaymentLineByUuid(uuid);
+                if (currentLine) {
+                    this._setLineStatus(currentLine, "retry");
+                    // ⚠️ si quieres poner a 0, hazlo seguro:
+                    this._safeSetAmount(currentLine, 0);
+                }
+                this.showError(_t("Payment cancelled."), _t("Cash Machine"));
                 return false;
             }
 
-            // 7) Si no cancelada pero deuda > 0 (o estado distinto) => fallo con deuda
-            this._setLineStatus(line, "retry");
+            // fallo con deuda
+            currentLine = this._getPaymentLineByUuid(uuid);
+            if (currentLine) this._setLineStatus(currentLine, "retry");
+
             const deudaAmount = deuda / Math.pow(10, this.pos.currency.decimal_places);
-            this.showError(
-                _t("Payment not completed. Remaining debt: %s", deudaAmount),
-                _t("Cash Machine Error")
-            );
+            this.showError(_t("Payment not completed. Remaining debt: %s", deudaAmount), _t("Cash Machine Error"));
             return false;
 
         } catch (e) {
             console.error("[SITECOSL] sendPaymentRequest ERROR:", e);
-            this._setLineStatus(line, "retry");
+            const currentLine = this._getPaymentLineByUuid(uuid);
+            if (currentLine) this._setLineStatus(currentLine, "retry");
             this.showError(_t("Unexpected error during payment."), _t("Cash Machine Error"));
             return false;
         } finally {
-            // Resolver cancel si alguien pulsó “Forzar terminación”
             if (this.cancellationResolver) {
                 this.cancellationResolver(false);
                 this.cancellationResolver = null;
             }
-
             this._paymentInProgress = false;
             this._currentOperationId = null;
             this._cancelRequested = false;
+        }
+    }
+
+
+    _getPaymentLineByUuid(uuid) {
+        const order = this.pos.getOrder();
+        if (!order) return null;
+        return order.payment_ids.find((l) => l.uuid === uuid) || null;
+    }
+
+    _safeSetAmount(line, amount) {
+        if (!line) return;
+        try {
+            // si la línea ya no pertenece a un pedido, setAmount rompe
+            if (!line.order) return;
+
+            if (typeof line.setAmount === "function") {
+                line.setAmount(amount);
+            } else {
+                line.amount = amount;
+            }
+        } catch (e) {
+            console.warn("[SITECOSL] safeSetAmount ignored:", e);
         }
     }
 
